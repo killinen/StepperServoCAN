@@ -35,7 +35,7 @@ const uint16_t rated_torque = 40;   //cNm
 
 //specify gearing parameters here:
 const float motor_gearbox_ratio = 5; //gearbox ratio
-const float final_drive_ratio = 2; //assembly gearing ratio
+const float final_drive_ratio = -2; //assembly gearing ratio
 
 
 void update_actuator_parameters(void){
