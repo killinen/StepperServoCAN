@@ -42,7 +42,7 @@ RED LED (Error):
     - `rated_current` (single phase) and `rated_torque` from motor spec or measurment. Note, this is just a datapoint and will be extrapolated up to 3.3A. Choose motor wisely.
     - `motor_gearbox_ratio` - gearbox attached to the motor
     - `final_drive_ratio` - any additional gearing - separate parameter for convenience
-- In the display menu - set `Rotation` to `CW` or `CCW` according to the needs. Alternatively, you can effectively change the direction by setting `motor_gearbox_ratio` or `final_drive_ratio` to negative value code.
+- ~~In the display menu - set `Rotation` to `CW` or `CCW` according to the needs.~~ Alternatively, you can effectively change the direction by setting `motor_gearbox_ratio` or `final_drive_ratio` to negative value code.
 Many other parameters are not used and are slated for removal.
 
 ### Calibration and first run
