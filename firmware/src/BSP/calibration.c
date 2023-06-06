@@ -25,7 +25,6 @@
 #include "A4950.h"
 #include "encoder.h"
 #include "delay.h"
-#include "actuator_config.h"
 
 static volatile CalData_t calData[CALIBRATION_TABLE_SIZE];
 
@@ -39,10 +38,6 @@ bool CalibrationTable_calValid(void){
 		if (calData[i].error == CALIBRATION_ERROR_NOT_SET){
 			return false;
 		}
-	}
-	
-	if (nvmFlashCalData->status != valid){ // cppcheck-suppress  misra-c2012-11.4 - loading values from mapped flash structure
-		CalibrationTable_saveToFlash();
 	}
 	return true;
 }
@@ -209,28 +204,31 @@ static void CalibrationTable_normalizeStartIdx(void){
 // to the A4950. This requires that the A4950 "step angle" of
 // zero is the first entry in the calibration table.
 static uint16_t CalibrationMove(int8_t dir, bool verifyOnly){
-	static uint16_t electAngle;//electric angle - carry over between passes
-	if (dir > 0){
-		electAngle = 0;
-	}
+	const uint16_t stepCurrent = I_MAX_A4950;
+	const uint16_t microStepDelay = 30U;  	//[uS] controls calibration speed
+	const uint16_t stabilizationDelay = 0U; //[uS] wait for taking measurements - some medium stopping time can cause resonance, long stopping time can cause oveheat
+	const uint16_t stepOversampling = 3U;  		//measurements to take per point, note large will take some time
+	const uint16_t microStep = A4950_STEP_MICROSTEPS; //microsteping resolution in between taking measurements
+
 	uint16_t maxError = 0;
-	uint16_t stepCurrent = motorParams.currentMa;
-		
-	const uint16_t preRunSteps = CALIBRATION_TABLE_SIZE/2U; //do half rotation preRun to start calibration with max hysteresis
+	static uint16_t electAngle;//electric angle - static carry value over between passes
+	if (dir > 0){
+		electAngle = 0; //initialize angle only for the first pass
+	}
+	const uint16_t preRunSteps = CALIBRATION_TABLE_SIZE/2U; //setup half rotation preRun to saturate magnetic hysteresis
 	const uint16_t passSteps = preRunSteps + CALIBRATION_TABLE_SIZE;
 	for (uint16_t step = 0; step < passSteps; step++) //Starting calibration 
 	{
 		bool preRun = (step < preRunSteps); //rotate some to stabilize hysteresis before starting actual calibration
-		
 		uint16_t averageMeasurment; //average between passes
 		if (!preRun) {
-			delay_ms(60);
-			uint16_t sampled = OverSampleEncoderAngle(100U); //collect angle every half step for 1.8 stepper
+			delay_us(stabilizationDelay);
+			uint16_t sampled = OverSampleEncoderAngle(stepOversampling); //collect angle every half step for 1.8 stepper
 			uint16_t expectedAngle = (uint16_t)((uint32_t)ANGLE_STEPS * electAngle / A4950_STEP_MICROSTEPS / motorParams.fullStepsPerRotation);//convert to shaft angle
 			uint16_t cal = (CalibrationTable_getCal(expectedAngle)); //(0-65535) - this is necessary for the second pass
 			
 			int16_t delta = sampled - cal; //this wrap around
-			if(dir > 0){//if first pass. This condition is not needed, but adds clarity
+			if(dir > 0){//if first pass
 				averageMeasurment = sampled; //add half a distance to average
 			}else{
 				averageMeasurment = cal + (uint16_t)(int16_t)(delta/2); //this also handles well averaging around wrap around
@@ -238,7 +236,6 @@ static uint16_t CalibrationMove(int8_t dir, bool verifyOnly){
 			//record max error
 			uint16_t dist_abs = (uint16_t) fastAbs(delta);
 			maxError = (dist_abs > maxError) ? dist_abs : maxError;
-
 		}
 		if(!verifyOnly && !preRun){
 			uint16_t calIdx;
@@ -249,16 +246,17 @@ static uint16_t CalibrationMove(int8_t dir, bool verifyOnly){
 			}
 			CalibrationTable_updateTableValue(calIdx % CALIBRATION_TABLE_SIZE, averageMeasurment);
 		}
-		const uint8_t minMicroStep = 8U; // a full step move could cause a move backwards for uncalibrated controller
-		uint8_t stepDivCal_q4 = (uint8_t)(((uint16_t) CALIBRATION_TABLE_SIZE << 4U) / motorParams.fullStepsPerRotation);
-		
-		//move certain amount of half steps before capturing next data
-		for(uint8_t i = 0; i<((minMicroStep << 4U) / stepDivCal_q4); i++){
-			electAngle += (uint16_t)(dir * (int16_t)(A4950_STEP_MICROSTEPS/minMicroStep)); //it's ok if it overflows since A4950_move has modulo
+
+		const uint8_t stepDivCal_q4 = (uint8_t)(((uint16_t) CALIBRATION_TABLE_SIZE << 4U) / motorParams.fullStepsPerRotation);
+		const uint16_t microSteps = ((microStep << 4U) / stepDivCal_q4);
+		for(uint16_t i = 0; i<microSteps; i++){	//move between measurements
+			electAngle += (uint16_t)(int16_t)(dir * (int16_t)(uint16_t)(A4950_STEP_MICROSTEPS/microStep)); //it's ok if it overflows since A4950_move does modulo
 			A4950_move(electAngle, stepCurrent);
-			delay_ms(1); //this produces somewhat smooth movement together with minMicroStep 
+			delay_us(microStepDelay);
 		}
 	}
+	//leave it holding two phases (half a step) for better thermals
+	A4950_move(electAngle+A4950_STEP_MICROSTEPS/2U, stepCurrent);
 	return maxError;
 }
 
@@ -276,8 +274,10 @@ uint16_t StepperCtrl_calibrateEncoder(bool verifyOnly){
 	delay_ms(1000);  	//give some time before motor starts to move the other direction
 	if(!verifyOnly){
 		maxError = CalibrationMove(-1, verifyOnly);
-		CalibrationTable_normalizeStartIdx(); //this step is optional, but makes the calibration table more readable
-		CalibrationTable_saveToFlash(); //saves the calibration to flash
+		if(maxError < CALIBRATION_MAX_ERROR){
+			CalibrationTable_normalizeStartIdx(); //this step is optional, but makes the calibration table more readable
+			CalibrationTable_saveToFlash(); //saves the calibration to flash
+		}
 	}
 	//measure new starting point
 	A4950_move(0, 0); //release motor - 0mA
